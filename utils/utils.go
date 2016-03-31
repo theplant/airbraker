@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/theplant/airbraker"
@@ -21,13 +22,29 @@ type notice struct {
 // BufferNotifier implements airbraker.Notifier interface.
 // It stores all notified notices.
 type BufferNotifier struct {
-	Notices []notice
+	notices   []notice
+	noticesMu sync.Mutex
+}
+
+func (b *BufferNotifier) setNotices(notices []notice) {
+	b.noticesMu.Lock()
+	defer b.noticesMu.Unlock()
+	b.notices = notices
+}
+
+func (b *BufferNotifier) getNotices() []notice {
+	b.noticesMu.Lock()
+	defer b.noticesMu.Unlock()
+	return b.notices
+}
+
+func (b *BufferNotifier) count() int {
+	return len(b.getNotices())
 }
 
 // Notify part of airbraker.Notifier.
 func (b *BufferNotifier) Notify(err interface{}, req *http.Request) error {
-	b.Notices = append(b.Notices, notice{Error: err, Request: req})
-
+	b.setNotices(append(b.getNotices(), notice{Error: err, Request: req}))
 	return nil
 }
 
@@ -51,7 +68,7 @@ func SetNotifier(notifier airbraker.Notifier) {
 
 // ClearBuffer clears the given notifier's buffer.
 func ClearBuffer(notifier *BufferNotifier) {
-	notifier.Notices = []notice{}
+	notifier.setNotices([]notice{})
 }
 
 // AssertNotice assert a notice that contains the given keyword
@@ -60,8 +77,8 @@ func AssertNotice(notifier *BufferNotifier, keyword string) (result bool) {
 	result = true
 
 	waitForNotice(notifier, 1, 1*time.Second)
-	if got, want := len(notifier.Notices), 1; got == want {
-		if got := notifier.Notices[0].Error; !strings.Contains(fmt.Sprintf("%v", got), keyword) {
+	if got, want := notifier.count(), 1; got == want {
+		if got := notifier.getNotices()[0].Error; !strings.Contains(fmt.Sprintf("%v", got), keyword) {
 			result = false
 			log.Printf(`got unexpected notices: "%v",  want: "%v"`, got, keyword)
 		}
@@ -77,7 +94,7 @@ func AssertNotice(notifier *BufferNotifier, keyword string) (result bool) {
 func waitForNotice(notifier *BufferNotifier, count int, timeout time.Duration) {
 	now := time.Now()
 	for {
-		if len(notifier.Notices) == count || time.Since(now) > timeout {
+		if notifier.count() == count || time.Since(now) > timeout {
 			break
 		}
 	}
